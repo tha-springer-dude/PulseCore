@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
-import android.graphics.Color;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Bundle;
@@ -23,6 +22,7 @@ import android.widget.Toast;
 import androidx.activity.EdgeToEdge;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.core.graphics.Insets;
@@ -37,12 +37,17 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQUEST_SELECT_FOLDER = 1001;
     private static final String PREFS_NAME = "audio_player_prefs";
     private static final String KEY_FOLDER_URI = "folder_uri";
+    private static final String MENU_ABOUT = "About";
+    private static final String MENU_REPEAT_ONE = "Repeat One";
+    private static final String MENU_SELECT_MUSIC_FOLDER = "Select Music Folder";
 
     private final List<AudioFile> audioFiles = new ArrayList<>();
     private AudioAdapter audioAdapter;
     private TextView nowPlayingText;
     private MediaPlayer mediaPlayer;
     private int playingPosition = AdapterView.INVALID_POSITION;
+    private boolean isPaused = false;
+    private boolean repeatOne = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -76,14 +81,33 @@ public class MainActivity extends AppCompatActivity {
 
     private void showToolbarMenu(View anchor) {
         PopupMenu popupMenu = new PopupMenu(this, anchor);
-        popupMenu.getMenu().add(R.string.select_music_folder);
+        popupMenu.getMenu().add(MENU_SELECT_MUSIC_FOLDER);
+        MenuItem repeatItem = popupMenu.getMenu().add(MENU_REPEAT_ONE);
+        repeatItem.setCheckable(true);
+        repeatItem.setChecked(repeatOne);
+        popupMenu.getMenu().add(MENU_ABOUT);
         popupMenu.setOnMenuItemClickListener(this::onToolbarMenuItemClick);
         popupMenu.show();
     }
 
     private boolean onToolbarMenuItemClick(MenuItem item) {
-        openFolderPicker();
+        if (MENU_REPEAT_ONE.contentEquals(item.getTitle())) {
+            repeatOne = !repeatOne;
+            item.setChecked(repeatOne);
+        } else if (MENU_ABOUT.contentEquals(item.getTitle())) {
+            showAboutDialog();
+        } else {
+            openFolderPicker();
+        }
         return true;
+    }
+
+    private void showAboutDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("About")
+                .setMessage("Name: Wille Springer\n\nStill loading mixtapes like it is 1997, but now the boombox has a touchscreen.")
+                .setPositiveButton("OK", null)
+                .show();
     }
 
     private void openFolderPicker() {
@@ -169,25 +193,73 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void playAudio(int position) {
-        stopPlayback();
+        if (position == playingPosition && mediaPlayer != null) {
+            togglePlayback();
+            return;
+        }
+
+        releasePlayback();
         AudioFile audioFile = audioFiles.get(position);
 
         mediaPlayer = new MediaPlayer();
         try {
             mediaPlayer.setDataSource(this, audioFile.uri);
-            mediaPlayer.setOnCompletionListener(player -> stopPlayback());
+            mediaPlayer.setOnCompletionListener(player -> handlePlaybackComplete());
             mediaPlayer.prepare();
             mediaPlayer.start();
             playingPosition = position;
+            isPaused = false;
             updateNowPlayingText();
             audioAdapter.notifyDataSetChanged();
         } catch (IOException | RuntimeException exception) {
-            stopPlayback();
+            releasePlayback();
             Toast.makeText(this, "Cannot play file", Toast.LENGTH_SHORT).show();
         }
     }
 
+    private void handlePlaybackComplete() {
+        if (repeatOne && playingPosition != AdapterView.INVALID_POSITION) {
+            restartCurrentTrack();
+        } else {
+            stopPlayback();
+        }
+    }
+
+    private void restartCurrentTrack() {
+        AudioFile audioFile = audioFiles.get(playingPosition);
+        try {
+            mediaPlayer.reset();
+            mediaPlayer.setDataSource(this, audioFile.uri);
+            mediaPlayer.setOnCompletionListener(player -> handlePlaybackComplete());
+            mediaPlayer.prepare();
+            mediaPlayer.start();
+            isPaused = false;
+            updateNowPlayingText();
+            audioAdapter.notifyDataSetChanged();
+        } catch (IOException | RuntimeException exception) {
+            releasePlayback();
+            Toast.makeText(this, "Cannot repeat file", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void togglePlayback() {
+        if (mediaPlayer.isPlaying()) {
+            mediaPlayer.pause();
+            isPaused = true;
+        } else {
+            mediaPlayer.start();
+            isPaused = false;
+        }
+
+        updateNowPlayingText();
+        audioAdapter.notifyDataSetChanged();
+    }
+
     private void stopPlayback() {
+        releasePlayback();
+    }
+
+    private void releasePlayback() {
         if (mediaPlayer != null) {
             mediaPlayer.setOnCompletionListener(null);
             if (mediaPlayer.isPlaying()) {
@@ -197,6 +269,7 @@ public class MainActivity extends AppCompatActivity {
             mediaPlayer = null;
         }
         playingPosition = AdapterView.INVALID_POSITION;
+        isPaused = false;
         updateNowPlayingText();
         if (audioAdapter != null) {
             audioAdapter.notifyDataSetChanged();
@@ -211,7 +284,8 @@ public class MainActivity extends AppCompatActivity {
         if (playingPosition == AdapterView.INVALID_POSITION) {
             nowPlayingText.setText("No track playing");
         } else {
-            nowPlayingText.setText("Playing: " + audioFiles.get(playingPosition).name);
+            String state = isPaused ? "Paused: " : "Playing: ";
+            nowPlayingText.setText(state + audioFiles.get(playingPosition).name);
         }
     }
 
@@ -237,17 +311,23 @@ public class MainActivity extends AppCompatActivity {
 
     private class AudioAdapter extends ArrayAdapter<AudioFile> {
         AudioAdapter(Context context, List<AudioFile> files) {
-            super(context, android.R.layout.simple_list_item_1, files);
+            super(context, R.layout.audio_list_item, R.id.audioFileName, files);
         }
 
         @NonNull
         @Override
         public View getView(int position, @Nullable View convertView, @NonNull ViewGroup parent) {
             View view = super.getView(position, convertView, parent);
-            TextView textView = view.findViewById(android.R.id.text1);
+            TextView textView = view.findViewById(R.id.audioFileName);
             AudioFile audioFile = getItem(position);
-            textView.setText(audioFile == null ? "" : audioFile.name);
-            view.setBackgroundColor(position == playingPosition ? Color.LTGRAY : Color.TRANSPARENT);
+            String name = audioFile == null ? "" : audioFile.name;
+            if (position == playingPosition) {
+                name = (isPaused ? "\u25B6 " : "\u23F8 ") + name;
+            }
+            textView.setText(name);
+            textView.setBackgroundResource(position == playingPosition
+                    ? R.drawable.audio_row_background_active
+                    : R.drawable.audio_row_background);
             return view;
         }
     }
